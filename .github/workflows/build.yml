@@ -16,6 +16,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Finds the project automatically:
+      #  - if the files are already in the repo, uses them
+      #  - otherwise unzips the .zip found in the repo (source.zip etc.)
+      #  - works even if the zip has an extra folder inside
+      - name: Locate or extract project
+        run: |
+          set -e
+          if [ -f settings.gradle ]; then
+            ROOT="$GITHUB_WORKSPACE"
+          else
+            ZIP=$(find . -maxdepth 3 -iname '*.zip' -not -path './.git/*' | head -n 1)
+            if [ -z "$ZIP" ]; then
+              echo "::error::No settings.gradle and no .zip file found in the repo. Upload source.zip to the repo root."
+              exit 1
+            fi
+            echo "Extracting $ZIP"
+            mkdir -p "$RUNNER_TEMP/src"
+            unzip -q -o "$ZIP" -d "$RUNNER_TEMP/src"
+            SG=$(find "$RUNNER_TEMP/src" -name settings.gradle | head -n 1)
+            if [ -z "$SG" ]; then
+              echo "::error::settings.gradle not found inside $ZIP"
+              exit 1
+            fi
+            ROOT=$(dirname "$SG")
+          fi
+          echo "Project root: $ROOT"
+          echo "PROJECT_DIR=$ROOT" >> "$GITHUB_ENV"
+
+      # The app downloads the exam date from exam.json in the repo root.
+      # If it is missing there, copy it from the project and commit it.
+      - name: Make sure exam.json is in the repo root
+        run: |
+          if [ ! -f exam.json ] && [ -f "$PROJECT_DIR/exam.json" ]; then
+            cp "$PROJECT_DIR/exam.json" exam.json
+            git config user.name "github-actions"
+            git config user.email "github-actions@users.noreply.github.com"
+            git add exam.json
+            git commit -m "Add exam.json"
+            git push
+          fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -26,13 +67,14 @@ jobs:
           gradle-version: '8.7'
 
       - name: Point the app at this repo's exam.json
-        run: sed -i "s#OWNER/REPO/BRANCH#${{ github.repository }}/${{ github.ref_name }}#" app/src/main/res/values/config.xml
+        run: |
+          sed -i "s#OWNER/REPO/BRANCH#${{ github.repository }}/${{ github.ref_name }}#" "$PROJECT_DIR/app/src/main/res/values/config.xml"
 
       - name: Build debug APK
-        run: gradle assembleDebug
-
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk JEE-Countdown.apk
+        run: |
+          cd "$PROJECT_DIR"
+          gradle assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/JEE-Countdown.apk"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
